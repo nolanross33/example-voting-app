@@ -1,0 +1,107 @@
+name: Build and Scan Images
+
+# Builds the vote, result, and worker images locally (never pushed to any registry)
+# and scans each one with the Sysdig CLI scanner (sysdig-cli-scanner).
+#
+# Draft only - see README.md "Sysdig image scanning workflow" section for the
+# manual setup steps required before this can run successfully.
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - 'main'
+    paths:
+      - 'vote/**'
+      - 'result/**'
+      - 'worker/**'
+      - '.github/workflows/build-scan.yml'
+  pull_request:
+    branches:
+      - 'main'
+    paths:
+      - 'vote/**'
+      - 'result/**'
+      - 'worker/**'
+      - '.github/workflows/build-scan.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-scan:
+    name: Build & scan (${{ matrix.service }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        service: [vote, result, worker]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build ${{ matrix.service }} image (local only, not pushed anywhere)
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.service }}
+          tags: local/${{ matrix.service }}:${{ github.sha }}
+          push: false
+          load: true
+
+      - name: Install sysdig-cli-scanner
+        # Intentionally tracks the latest scanner version rather than pinning,
+        # so vulnerability data stays current - this does mean the exact
+        # binary that runs can change between workflow runs. If you'd rather
+        # have a reproducible/pinned version instead, hardcode VERSION= to a
+        # known-good release from https://download.sysdig.com/scanning/sysdig-cli-scanner/latest_version.txt
+        # history and drop the curl line below that reads it dynamically.
+        #
+        # Integrity: Sysdig does publish a per-build sha256 checksum file
+        # (confirmed live at download time: https://download.sysdig.com/scanning/bin/sysdig-cli-scanner/<version>/linux/amd64/sysdig-cli-scanner.sha256,
+        # format "<hash>  sysdig-cli-scanner" - i.e. ready for `sha256sum -c`),
+        # so it's fetched and verified below rather than trusting the binary
+        # download unchecked. The checksum itself is always pulled fresh from
+        # Sysdig at run time, never hardcoded here.
+        run: |
+          VERSION=$(curl -sL https://download.sysdig.com/scanning/sysdig-cli-scanner/latest_version.txt)
+          curl -sL -o sysdig-cli-scanner "https://download.sysdig.com/scanning/bin/sysdig-cli-scanner/${VERSION}/linux/amd64/sysdig-cli-scanner"
+          curl -sL -o sysdig-cli-scanner.sha256 "https://download.sysdig.com/scanning/bin/sysdig-cli-scanner/${VERSION}/linux/amd64/sysdig-cli-scanner.sha256"
+          sha256sum -c sysdig-cli-scanner.sha256
+          chmod +x sysdig-cli-scanner
+
+      - name: Scan ${{ matrix.service }} image with Sysdig CLI scanner
+        env:
+          # sysdig-cli-scanner itself reads the token from SECURE_API_TOKEN.
+          # That's populated here from the SYSDIG_SECURE_TOKEN repo secret -
+          # SYSDIG_SECURE_TOKEN is a PLACEHOLDER NAME ONLY. No real token value
+          # is set anywhere in this file; Nolan must add the actual secret in
+          # the GitHub repo settings (see README.md).
+          SECURE_API_TOKEN: ${{ secrets.SYSDIG_SECURE_TOKEN }}
+          # Passed through env (not interpolated straight into the script
+          # below) so a value containing shell metacharacters can't inject
+          # commands into this step.
+          SYSDIG_SECURE_URL: ${{ vars.SYSDIG_SECURE_URL }}
+        run: |
+          if [ -z "$SYSDIG_SECURE_URL" ]; then
+            echo "::error::SYSDIG_SECURE_URL repository variable is not set. Add it under Settings > Secrets and variables > Actions > Variables (see README.md)." >&2
+            exit 1
+          fi
+          # NOTE (unverified): the docker:// prefix is documented by Sysdig
+          # (cli-scanner-vm-mode docs) as "load the image from the Docker
+          # daemon", with pull:// as the separate "force a registry pull"
+          # prefix - which reads as meaning docker:// should work against an
+          # image that was only `docker build ... --load`'d and never pushed,
+          # like the one built above. That reading was not confirmed against
+          # an exact verbatim doc sentence, so it's not guaranteed. Run this
+          # workflow once and confirm the scan actually finds the image
+          # before relying on it to gate anything.
+          ./sysdig-cli-scanner \
+            --apiurl "$SYSDIG_SECURE_URL" \
+            "docker://local/${{ matrix.service }}:${{ github.sha }}" \
+            --console-log \
+            --dbpath=./cache/db/ \
+            --cachepath=./cache/scanner-cache/
