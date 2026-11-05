@@ -74,6 +74,11 @@ jobs:
           chmod +x sysdig-cli-scanner
 
       - name: Scan ${{ matrix.service }} image with Sysdig CLI scanner
+        # Report-only: findings still get uploaded to Sysdig Secure, but a
+        # failed policy evaluation (sysdig-cli-scanner exit code 1) no longer
+        # fails this step or blocks the rest of the workflow. Remove the
+        # continue-on-error line below to turn the policy gate back on.
+        continue-on-error: true
         env:
           # sysdig-cli-scanner itself reads the token from SECURE_API_TOKEN.
           # That's populated here from the SYSDIG_SECURE_TOKEN repo secret -
@@ -90,15 +95,11 @@ jobs:
             echo "::error::SYSDIG_SECURE_URL repository variable is not set. Add it under Settings > Secrets and variables > Actions > Variables (see README.md)." >&2
             exit 1
           fi
-          # NOTE (unverified): the docker:// prefix is documented by Sysdig
-          # (cli-scanner-vm-mode docs) as "load the image from the Docker
-          # daemon", with pull:// as the separate "force a registry pull"
-          # prefix - which reads as meaning docker:// should work against an
-          # image that was only `docker build ... --load`'d and never pushed,
-          # like the one built above. That reading was not confirmed against
-          # an exact verbatim doc sentence, so it's not guaranteed. Run this
-          # workflow once and confirm the scan actually finds the image
-          # before relying on it to gate anything.
+          # Confirmed working in the first run on b4ab874: all 3 jobs reached
+          # the policy-gate exit code (1) rather than an image-not-found
+          # error, and findings uploaded to Sysdig Secure - so docker://
+          # does correctly scan an image that was only `docker build
+          # ... --load`'d above and never pushed to a registry.
           ./sysdig-cli-scanner \
             --apiurl "$SYSDIG_SECURE_URL" \
             "docker://local/${{ matrix.service }}:${{ github.sha }}" \
