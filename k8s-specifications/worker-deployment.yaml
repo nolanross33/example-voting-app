@@ -17,3 +17,16 @@ spec:
       containers:
       - image: dockersamples/examplevotingapp_worker
         name: worker
+        resources:
+          requests:
+            cpu: 50m
+            memory: 64Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop: ["NET_RAW"]
+          seccompProfile:
+            type: RuntimeDefault
