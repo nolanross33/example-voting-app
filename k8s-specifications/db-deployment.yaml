@@ -32,6 +32,12 @@ spec:
           limits:
             cpu: 500m
             memory: 512Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop: ["NET_RAW"]
+          seccompProfile:
+            type: RuntimeDefault
         volumeMounts:
         - mountPath: /var/lib/postgresql/data
           name: db-data
